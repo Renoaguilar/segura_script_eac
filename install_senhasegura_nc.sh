@@ -55,11 +55,13 @@ else print_status "$OK" "Docker Compose ya instalado"; fi
 # 5. Solicitar datos con validación
 mkdir -p "$INSTALL_DIR"; cd "$INSTALL_DIR" || exit 1
 
-# Fingerprint UUIDv4
+# Fingerprint UUIDv4 o base64 encriptado
 while true; do
-    read -rp "🔐 FINGERPRINT (UUIDv4): " FINGERPRINT
-    [[ "$FINGERPRINT" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] && break
-    echo -e "$FAIL Formato inválido. Ejemplo: bf6a6a8c-aa55-48b3-86bb-12b7d58e32d5"
+    read -rp "🔐 FINGERPRINT (UUIDv4 o token encriptado): " FINGERPRINT
+    if [[ "$FINGERPRINT" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ || "$FINGERPRINT" =~ ^[A-Za-z0-9+/=]{60,}$ ]]; then
+        break
+    fi
+    echo -e "$FAIL Formato inválido. Usa UUID o token fingerprint encriptado"
 done
 
 # PUERTO del agente
