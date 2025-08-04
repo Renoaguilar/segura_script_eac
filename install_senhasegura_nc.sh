@@ -1,117 +1,81 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
-set -euo pipefail
+# -----------------------------------------------
+# INSTALACIÓN AUTOMÁTICA DE NETWORK CONNECTOR
+# Usa la última versión disponible del agente
+# -----------------------------------------------
 
-echo "🔐 Instalación del agente Network Connector de senhasegura"
-echo "-----------------------------------------------------------"
+INSTALL_DIR="/opt/senhasegura/network-connector"
+COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
+AGENT_IMAGE="registry.senhasegura.io/network-connector/agent-v2:latest"
 
-# === FUNCIÓN: validar si comando existe ===
-check_command() {
-  if ! command -v "$1" &>/dev/null; then
-    echo "❌ Requisito faltante: '$1' no está instalado."
-    return 1
-  fi
-}
+# Colores
+OK="\033[1;32m[OK]\033[0m"
+FAIL="\033[1;31m[FAIL]\033[0m"
+INFO="\033[1;36m[INFO]\033[0m"
 
-# === VALIDACIONES PREVIAS ===
-echo "🔎 Validando entorno..."
+echo -e "$INFO Verificando requisitos..."
 
-# 1. Ejecutar como root
-if [[ "$EUID" -ne 0 ]]; then
-  echo "❌ Este script debe ejecutarse como root o con sudo."
-  exit 1
-fi
-
-# 2. Verificar conexión a internet
-if ! ping -q -c 1 -W 2 8.8.8.8 &>/dev/null; then
-  echo "❌ No hay conexión a Internet. Verifica la red."
-  exit 1
-fi
-
-# 3. Verificar si Docker ya está instalado
-if command -v docker &>/dev/null; then
-  echo "⚠️ Docker ya está instalado. Se omitirá la reinstalación."
-  DOCKER_INSTALLED=true
+# 1. Instalar Docker si no existe
+if ! command -v docker &> /dev/null; then
+    echo -e "$INFO Instalando Docker..."
+    apt update -y && apt install -y docker.io || { echo -e "$FAIL Error instalando Docker"; exit 1; }
+    systemctl enable docker --now
 else
-  DOCKER_INSTALLED=false
+    echo -e "$OK Docker ya está instalado"
 fi
 
-# === RECOLECCIÓN DE DATOS ===
-read -rp "➡️  Ingresa el FINGERPRINT del agente: " SENHASEGURA_FINGERPRINT
-if [[ -z "$SENHASEGURA_FINGERPRINT" ]]; then
-  echo "❌ El fingerprint no puede estar vacío."
-  exit 1
+# 2. Instalar Docker Compose si no existe
+if ! command -v docker-compose &> /dev/null; then
+    echo -e "$INFO Instalando Docker Compose..."
+    curl -sL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+else
+    echo -e "$OK Docker Compose ya está instalado"
 fi
 
-read -rp "➡️  Puerto para el agente (30000-30999): " SENHASEGURA_AGENT_PORT
-if ! [[ "$SENHASEGURA_AGENT_PORT" =~ ^30[0-9]{3}$ ]]; then
-  echo "❌ Puerto inválido. Debe estar entre 30000 y 30999."
-  exit 1
-fi
+# 3. Crear carpeta de despliegue
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR" || exit 1
 
-# Validar si el puerto está en uso
-if ss -tuln | grep -q ":$SENHASEGURA_AGENT_PORT "; then
-  echo "❌ El puerto $SENHASEGURA_AGENT_PORT ya está en uso."
-  exit 1
-fi
+# 4. Solicitar parámetros
+read -rp "🔐 FINGERPRINT (desde PAM): " FINGERPRINT
+read -rp "📡 Puerto de escucha del agente (ej. 5555): " AGENT_PORT
+read -rp "🌐 Dirección IP o hostname del PAM (ej. 172.16.1.10): " PAM_ADDRESS
+read -rp "¿Es este un agente secundario? (true/false): " IS_SECONDARY
 
-read -rp "➡️  IPs o rangos permitidos (separados por comas): " SENHASEGURA_ADDRESSES
-if [[ -z "$SENHASEGURA_ADDRESSES" ]]; then
-  echo "❌ Las direcciones IP no pueden estar vacías."
-  exit 1
-fi
-
-read -rp "➡️  Versión del agente a usar (ej. 2.20.0): " SENHASEGURA_AGENT_VERSION
-SENHASEGURA_IMAGE="registry.senhasegura.io/network-connector/agent-v2:$SENHASEGURA_AGENT_VERSION"
-
-# === INSTALACIÓN DE DOCKER ===
-if [[ "$DOCKER_INSTALLED" = false ]]; then
-  echo "📦 Instalando Docker y Docker Compose..."
-  apt update -y
-  apt install -y \
-    ca-certificates \
-    curl \
-    gnupg \
-    lsb-release
-
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-    | tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-  apt update -y
-  apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-fi
-
-docker --version
-docker compose version
-
-# === CREAR DIRECTORIO Y ARCHIVO ===
-AGENT_DIR="/opt/senhasegura-network-connector"
-mkdir -p "$AGENT_DIR"
-cd "$AGENT_DIR"
-
-cat > docker-compose.yaml <<EOF
-version: '3.5'
+# 5. Crear archivo docker-compose.yml
+cat > "$COMPOSE_FILE" <<EOF
+version: "3"
 services:
-  network-connector-agent:
-    container_name: network-connector-agent
-    image: $SENHASEGURA_IMAGE
+  senhasegura-network-connector-agent:
+    image: "${AGENT_IMAGE}"
     restart: unless-stopped
-    network_mode: host
+    networks:
+      - senhasegura-network-connector
     environment:
-      - AGENT_FINGERPRINT=$SENHASEGURA_FINGERPRINT
-      - AGENT_PORT=$SENHASEGURA_AGENT_PORT
-      - AGENT_ADDRESS=$SENHASEGURA_ADDRESSES
+      SENHASEGURA_FINGERPRINT: "${FINGERPRINT}"
+      SENHASEGURA_AGENT_PORT: "${AGENT_PORT}"
+      SENHASEGURA_ADDRESSES: "${PAM_ADDRESS}"
+      SENHASEGURA_AGENT_SECONDARY: "${IS_SECONDARY}"
+networks:
+  senhasegura-network-connector:
+    driver: bridge
 EOF
 
-# === DESPLIEGUE ===
-echo "🚀 Lanzando contenedor del agente..."
-docker compose up -d
+echo -e "$OK docker-compose.yml generado en $COMPOSE_FILE"
 
-echo ""
-echo "✅ Instalación completada. Logs con:"
-echo "   docker compose logs -f"
+# 6. Iniciar servicio
+echo -e "$INFO Iniciando el Network Connector..."
+docker-compose up -d
+
+if [[ $? -eq 0 ]]; then
+    echo -e "$OK Network Connector iniciado correctamente"
+else
+    echo -e "$FAIL Hubo un problema al iniciar el agente"
+    exit 1
+fi
+
+# 7. Mostrar logs recientes
+echo -e "$INFO Logs del agente:"
+docker-compose logs --tail=20
