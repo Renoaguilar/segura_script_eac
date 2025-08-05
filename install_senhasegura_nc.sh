@@ -1,6 +1,6 @@
 #!/bin/bash
 # ----------------------------------------------------------------
-# SENHASEGURA NETWORK CONNECTOR INSTALLER (VALIDACION SIMPLIFICADA)
+# SENHASEGURA NETWORK CONNECTOR INSTALLER v3 (Resiliente + Firewall + Docker Compose Fix)
 # ----------------------------------------------------------------
 INSTALL_DIR="/opt/senhasegura/network-connector"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
@@ -21,7 +21,7 @@ print_status() {
 
 mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR" || exit 1
 
-# 1. Valida acceso a registro y abre puerto si es necesario
+# 1. Validar acceso a registry y abrir puerto si es necesario
 nc -zvw2 registry.senhasegura.io 51445 &>/dev/null
 if [[ $? -eq 0 ]]; then
     print_status "$OK" "Puerto 51445 accesible"
@@ -32,8 +32,12 @@ else
     elif command -v firewall-cmd &>/dev/null; then
         firewall-cmd --add-port=51445/tcp --permanent && firewall-cmd --reload && print_status "$OK" "Regla firewalld aplicada para 51445"
     else
-        print_status "$WARN" "No se detectó firewall compatible para abrir el puerto. Revisa manualmente."
+        iptables -C INPUT -p tcp --dport 51445 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 51445 -j ACCEPT && print_status "$OK" "Puerto 51445 abierto con iptables"
     fi
+
+    # Validar de nuevo
+    sleep 2
+    nc -zvw2 registry.senhasegura.io 51445 &>/dev/null && print_status "$OK" "Puerto 51445 ahora accesible" || print_status "$FAIL" "No se pudo abrir el puerto 51445"
 fi
 
 # 2. Solicitar datos
@@ -87,30 +91,39 @@ EOF
 
 print_status "$OK" "YAML generado"
 
-# 4. Validar Docker y Compose
+# 4. Validar e instalar Docker si falta
 if ! command -v docker &>/dev/null; then
-    echo -e "$FAIL Docker no está instalado o no está en el PATH."
-    exit 1
+    echo -e "$WARN Docker no detectado. Instalando..."
+    apt update -y && apt install -y docker.io && systemctl enable docker --now
 fi
 
-if ! command -v docker-compose &>/dev/null; then
-    echo -e "$WARN Docker Compose no encontrado. Instalando..."
+# 5. Validar docker-compose (v1) o plugin docker compose (v2)
+if ! command -v docker-compose &>/dev/null && ! docker compose version &>/dev/null; then
+    echo -e "$WARN docker-compose no encontrado. Instalando..."
     curl -sL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
 fi
 
-# 5. Ejecutar
-(cd "$INSTALL_DIR" && docker-compose down --remove-orphans && docker-compose up -d)
+# 6. Ejecutar con la versión disponible
+cd "$INSTALL_DIR"
+if command -v docker-compose &>/dev/null; then
+    docker-compose down --remove-orphans && docker-compose up -d
+elif docker compose version &>/dev/null; then
+    docker compose down --remove-orphans && docker compose up -d
+else
+    echo -e "$FAIL No se pudo ejecutar docker compose"
+    exit 1
+fi
 
+# 7. Validar estado
 sleep 5
 CONTAINER=$(docker ps --format '{{.Names}}' | grep network-connector-agent)
-
 if [[ -n "$CONTAINER" ]]; then
     docker logs "$CONTAINER" 2>&1 | grep -q "Agent started"
     if [[ $? -eq 0 ]]; then
         echo -e "\n$OK Agente funcionando correctamente."
     else
-        echo -e "\n$FAIL El contenedor está corriendo, pero el agente no inició correctamente."
+        echo -e "\n$FAIL Contenedor activo pero el agente no responde correctamente."
     fi
 else
     echo -e "\n$FAIL El contenedor no está corriendo."
