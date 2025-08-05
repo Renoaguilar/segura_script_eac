@@ -21,8 +21,20 @@ print_status() {
 
 mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR" || exit 1
 
-# 1. Valida acceso a registro
-nc -zvw2 registry.senhasegura.io 51445 &>/dev/null && print_status "$OK" "Puerto 51445 accesible" || print_status "$FAIL" "Puerto 51445 inaccesible"
+# 1. Valida acceso a registro y abre puerto si es necesario
+nc -zvw2 registry.senhasegura.io 51445 &>/dev/null
+if [[ $? -eq 0 ]]; then
+    print_status "$OK" "Puerto 51445 accesible"
+else
+    print_status "$FAIL" "Puerto 51445 inaccesible. Intentando abrir..."
+    if command -v ufw &>/dev/null; then
+        ufw allow 51445/tcp && print_status "$OK" "Regla UFW abierta para puerto 51445"
+    elif command -v firewall-cmd &>/dev/null; then
+        firewall-cmd --add-port=51445/tcp --permanent && firewall-cmd --reload && print_status "$OK" "Regla firewalld aplicada para 51445"
+    else
+        print_status "$WARN" "No se detectó firewall compatible para abrir el puerto. Revisa manualmente."
+    fi
+fi
 
 # 2. Solicitar datos
 while true; do
@@ -44,12 +56,9 @@ while true; do
     else
         echo -e "$FAIL Formato incorrecto. Solo IPs, sin puertos."
     fi
-    
-    # Verificar si hay uso de IP:PUERTO por error
     if [[ "$PAM_ADDRESS" =~ ":" ]]; then
         echo -e "$WARN No debes incluir puertos en SENHASEGURA_ADDRESSES. Solo IPs."
     fi
-    
     
     done
 
@@ -78,11 +87,17 @@ EOF
 
 print_status "$OK" "YAML generado"
 
-# 4. Deploy
-which docker-compose &>/dev/null || {
+# 4. Validar Docker y Compose
+if ! command -v docker &>/dev/null; then
+    echo -e "$FAIL Docker no está instalado o no está en el PATH."
+    exit 1
+fi
+
+if ! command -v docker-compose &>/dev/null; then
+    echo -e "$WARN Docker Compose no encontrado. Instalando..."
     curl -sL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
     chmod +x /usr/local/bin/docker-compose
-}
+fi
 
 # 5. Ejecutar
 (cd "$INSTALL_DIR" && docker-compose down --remove-orphans && docker-compose up -d)
@@ -91,7 +106,7 @@ sleep 5
 CONTAINER=$(docker ps --format '{{.Names}}' | grep network-connector-agent)
 
 if [[ -n "$CONTAINER" ]]; then
-    docker logs "$CONTAINER" | grep -q "Agent started"
+    docker logs "$CONTAINER" 2>&1 | grep -q "Agent started"
     if [[ $? -eq 0 ]]; then
         echo -e "\n$OK Agente funcionando correctamente."
     else
