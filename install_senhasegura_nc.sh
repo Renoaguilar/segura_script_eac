@@ -1,9 +1,7 @@
 #!/bin/bash
 # ----------------------------------------------------------------
-# SENHASEGURA NETWORK CONNECTOR INSTALLER (VALIDACIÓN + RESUMEN)
-# Documentación oficial: https://docs.senhasegura.io/en/network-connector-how-to-install-network-connector
+# SENHASEGURA NETWORK CONNECTOR INSTALLER (VALIDACION SIMPLIFICADA)
 # ----------------------------------------------------------------
-
 INSTALL_DIR="/opt/senhasegura/network-connector"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
 AGENT_IMAGE="registry.senhasegura.io/network-connector/agent-v2:latest"
@@ -15,73 +13,49 @@ INFO="\033[1;36m[INFO]\033[0m"
 
 LOGFILE="/var/tmp/install_nc_$(date +%Y%m%d_%H%M%S).log"
 declare -A STATUS
-echo -e "\n$INFO Instalación Network Connector — $(date)" | tee -a "$LOGFILE"
 
 print_status() {
     STATUS["$2"]="$1"
-    echo -e "   ➤ $1 $2" | tee -a "$LOGFILE"
+    echo -e "   ➔ $1 $2" | tee -a "$LOGFILE"
 }
 
-# 1. Validar conectividad externa
-echo -e "\n$INFO Verificando conectividad externa..." | tee -a "$LOGFILE"
-nc -zvw2 registry.senhasegura.io 51445 &>/dev/null && print_status "$OK" "Puerto 51445 WebSocket accesible" || print_status "$FAIL" "Puerto 51445 WebSocket inaccesible"
-nc -zvw2 registry.senhasegura.io 443 &>/dev/null && print_status "$OK" "Acceso HTTPS a registry.senhasegura.io" || print_status "$FAIL" "Sin acceso a registry.senhasegura.io:443"
-nc -zvw2 us-docker.pkg.dev 443 &>/dev/null && print_status "$OK" "Acceso opcional a us-docker.pkg.dev" || print_status "$WARN" "No acceso a us-docker.pkg.dev (no bloqueante)"
+mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR" || exit 1
 
-# 2. Orbit (si es servidor)
-if command -v orbit &>/dev/null; then
-    echo -e "\n$INFO Orbit detectado, verificando configuración local del servidor NC..." | tee -a "$LOGFILE"
-    sudo orbit network-connector status &>/dev/null
-    if [[ $? -ne 0 ]]; then
-        sudo orbit network-connector setup && print_status "$OK" "Servidor PAM configurado correctamente" || print_status "$FAIL" "Error en setup de orbit network-connector"
-    else
-        print_status "$OK" "Servidor PAM ya tiene NC activo"
-    fi
-else
-    print_status "$WARN" "Orbit no detectado. Asumimos host agente"
-fi
+# 1. Valida acceso a registro
+nc -zvw2 registry.senhasegura.io 51445 &>/dev/null && print_status "$OK" "Puerto 51445 accesible" || print_status "$FAIL" "Puerto 51445 inaccesible"
 
-# 3. Docker
-if ! command -v docker &>/dev/null; then
-    apt update -y && apt install -y docker.io && systemctl enable docker --now && print_status "$OK" "Docker instalado" || print_status "$FAIL" "Error instalando Docker"
-else print_status "$OK" "Docker ya instalado"; fi
-
-# 4. Docker Compose
-if ! command -v docker-compose &>/dev/null; then
-    curl -sL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose && print_status "$OK" "Docker Compose instalado" || print_status "$FAIL" "Error instalando Docker Compose"
-else print_status "$OK" "Docker Compose ya instalado"; fi
-
-# 5. Solicitar datos con validación
-mkdir -p "$INSTALL_DIR"; cd "$INSTALL_DIR" || exit 1
-
-# Fingerprint UUIDv4 o base64 encriptado
+# 2. Solicitar datos
 while true; do
-    read -rp "🔐 FINGERPRINT (UUIDv4 o token encriptado): " FINGERPRINT
-    if [[ "$FINGERPRINT" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ || "$FINGERPRINT" =~ ^[A-Za-z0-9+/=]{60,}$ ]]; then
-        break
-    fi
-    echo -e "$FAIL Formato inválido. Usa UUID o token fingerprint encriptado"
+    read -rp "🔐 FINGERPRINT: " FINGERPRINT
+    [[ "$FINGERPRINT" =~ ^[a-f0-9\-]{36}$ || "$FINGERPRINT" =~ ^[A-Za-z0-9+/=]{60,}$ ]] && break
+    echo -e "$FAIL Formato inválido."
 done
 
-# PUERTO del agente
 while true; do
     read -rp "📡 PUERTO AGENTE (30000-30999): " AGENT_PORT
     [[ "$AGENT_PORT" =~ ^30[0-9]{3}$ ]] && break
-    echo -e "$FAIL El puerto debe estar entre 30000 y 30999"
+    echo -e "$FAIL Puerto inválido."
 done
 
-# DIRECCIONES
 while true; do
-    read -rp "🌐 DIRECCIONES PAM (IP:PUERTO, separadas por coma): " PAM_ADDRESS
-    [[ "$PAM_ADDRESS" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]+(,([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]+)*$ ]] && break
-    echo -e "$FAIL Formato incorrecto. Ejemplo: 172.16.1.130:50000,172.16.1.131:50000"
-done
+    read -rp "🌐 IP(s) de PAM (coma separadas, sin puerto): " PAM_ADDRESS
+    if [[ "$PAM_ADDRESS" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(,([0-9]{1,3}\.){3}[0-9]{1,3})*$ ]]; then
+        break
+    else
+        echo -e "$FAIL Formato incorrecto. Solo IPs, sin puertos."
+    fi
+    
+    # Verificar si hay uso de IP:PUERTO por error
+    if [[ "$PAM_ADDRESS" =~ ":" ]]; then
+        echo -e "$WARN No debes incluir puertos en SENHASEGURA_ADDRESSES. Solo IPs."
+    fi
+    
+    
+    done
 
-# Agente secundario
-read -rp "🔄 ¿Es este un agente secundario? (true/false): " IS_SECONDARY
+read -rp "🔄 ¿Es agente secundario? (true/false): " IS_SECONDARY
 
-# 6. Generar docker-compose.yml
+# 3. Generar YAML
 cat > "$COMPOSE_FILE" <<EOF
 version: "3"
 services:
@@ -95,34 +69,36 @@ services:
       SENHASEGURA_AGENT_PORT: "$AGENT_PORT"
       SENHASEGURA_ADDRESSES: "$PAM_ADDRESS"
       SENHASEGURA_AGENT_SECONDARY: "$IS_SECONDARY"
+    ports:
+      - "$AGENT_PORT:$AGENT_PORT"
 networks:
   senhasegura-network-connector:
     driver: bridge
 EOF
 
-print_status "$OK" "docker-compose.yml generado en $COMPOSE_FILE"
+print_status "$OK" "YAML generado"
 
-# 7. Levantar contenedor
-docker-compose up -d && print_status "$OK" "Contenedor iniciado" || print_status "$FAIL" "Error al iniciar el contenedor"
+# 4. Deploy
+which docker-compose &>/dev/null || {
+    curl -sL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+}
 
-# 8. Verificar contenedor activo
+# 5. Ejecutar
+(cd "$INSTALL_DIR" && docker-compose down --remove-orphans && docker-compose up -d)
+
+sleep 5
 CONTAINER=$(docker ps --format '{{.Names}}' | grep network-connector-agent)
+
 if [[ -n "$CONTAINER" ]]; then
-    print_status "$OK" "Contenedor $CONTAINER en ejecución"
+    docker logs "$CONTAINER" | grep -q "Agent started"
+    if [[ $? -eq 0 ]]; then
+        echo -e "\n$OK Agente funcionando correctamente."
+    else
+        echo -e "\n$FAIL El contenedor está corriendo, pero el agente no inició correctamente."
+    fi
 else
-    print_status "$FAIL" "Contenedor del agente no está corriendo"
+    echo -e "\n$FAIL El contenedor no está corriendo."
 fi
 
-# 9. Logs breves
-echo -e "\n$INFO Logs recientes del agente:"
-docker-compose logs --tail=10 | tee -a "$LOGFILE"
-
-# 10. RESUMEN FINAL
-echo -e "\n\033[1;35m╔════════════════════════════════════════════╗"
-echo -e "║         RESUMEN FINAL DE LA INSTALACIÓN   ║"
-echo -e "╚════════════════════════════════════════════╝\033[0m"
-for key in "${!STATUS[@]}"; do
-    echo -e " - ${STATUS[$key]} $key"
-done
-
-echo -e "\n$OK Revisión completa. Logs: $LOGFILE"
+exit 0
