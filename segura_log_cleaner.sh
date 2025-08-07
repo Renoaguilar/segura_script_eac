@@ -20,7 +20,7 @@ fi
 #                                      |___/
 
 # Script: segura_log_cleaner.sh
-# Autor: ChatGPT (ajustado para Esteban Ac)
+# Autor:  Esteban Ac
 # Función: Limpieza de logs grandes y sesiones huérfanas con resumen visual por archivo
 
 TOP_N=5
