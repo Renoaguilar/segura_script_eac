@@ -10,6 +10,19 @@ if [[ "$user_pass" != "$PASSWORD" ]]; then
   exit 1
 fi
 
+#                 _
+#                | |
+#  ___  ___ _ __ | |__   __ _ ___  ___  __ _ _   _ _ __ __ _
+# / __|/ _ \ '_ \| '_ \ / _` / __|/ _ \/ _` | | | | '__/ _` |
+# \__ \  __/ | | | | | | (_| \__ \  __/ (_| | |_| | | | (_| |
+# |___/\___|_| |_|_| |_|\__,_|___/\___|\__, |\__,_|_|  \__,_|
+#                                       __/ |
+#                                      |___/
+
+# Script: segura_log_cleaner.sh
+# Autor:  Esteban Ac
+# Función: Limpieza de logs grandes y sesiones huérfanas con resumen visual por archivo
+
 # ----------------------------------------------------------------
 # SENHASEGURA NETWORK CONNECTOR INSTALLER v3 (Resiliente + Firewall + Docker Compose Fix)
 # ----------------------------------------------------------------
