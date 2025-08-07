@@ -2,7 +2,7 @@
 # Validación previa a upgrade offline de Senhasegura
 
 #!/bin/bash
-
+# Pass Senhasegura
 PASSWORD="Segura2025"
 
 read -s -p "🔐 Ingresa la contraseña para ejecutar este script: " user_pass
