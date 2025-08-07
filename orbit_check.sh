@@ -129,3 +129,4 @@ sudo orbit backup time --show 2>&1 | tee -a "$LOGFILE"
 
 # Final
 echo -e "\n\033[1;34m✔ Validación completada. Revisa el reporte completo en:\033[0m $LOGFILE"
+history -d $((HISTCMD-1))
