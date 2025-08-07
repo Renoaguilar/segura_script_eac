@@ -55,7 +55,7 @@ fi
 if [[ -t 1 ]]; then
   TL="┌"; TR="┐"; BL="└"; BR="┘"; H="─"; V="│"; SEP="├"; SEPR="┤"; TEE="┬"; BTM="┴"
 else
-  TL="+"; TR="+"; BL="+"; BR="+"; H="-"; V="|"; SEP="+"; SEPR="+"; TEE="+"; BTM="+"
+  TL="+"; TR="+"; BL="+"; BR="+"; H="-"; V="|"; SEP="+"; SEPR="+""; TEE="+"; BTM="+"
 fi
 
 ok()   { echo -e "${GREEN}✔${NC} $*"; }
@@ -82,7 +82,6 @@ jq_finalize(){
   JSON=$(printf '%s' "$JSON" | jq --arg v "$VERSION" --arg ts "$DATE_UTC" --arg hn "$HOSTNAME" --argjson ok "$okc" --argjson w "$warnc" --argjson e "$errc" \
         '.version=$v|.timestamp=$ts|.hostname=$hn|.summary={"ok":$ok,"warnings":$w,"errors":$e}' 2>/dev/null) || true
 }
-
 # Si no hay jq, desactivar JSON para evitar errores
 if ! has_cmd jq; then WANT_JSON="0"; fi
 
@@ -376,3 +375,4 @@ if [[ "$WANT_JSON" == "1" ]] && has_cmd jq; then
 fi
 
 exit 0
+
