@@ -1,4 +1,15 @@
 #!/bin/bash
+
+# Pass Senhasegura
+PASSWORD="Segura2025"
+
+read -s -p "🔐 Ingresa la contraseña para ejecutar este script: " user_pass
+echo ""
+if [[ "$user_pass" != "$PASSWORD" ]]; then
+  echo "❌ Contraseña incorrecta. Abortando..."
+  exit 1
+fi
+
 # ----------------------------------------------------------------
 # SENHASEGURA NETWORK CONNECTOR INSTALLER v3 (Resiliente + Firewall + Docker Compose Fix)
 # ----------------------------------------------------------------
