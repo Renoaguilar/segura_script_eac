@@ -17,6 +17,15 @@
 # Filtros:
 #   --system --network --containers --orbit --logs
 # =============================================================================
+# Pass Senhasegura
+PASSWORD="Segura2025"
+
+read -s -p "🔐 Ingresa la contraseña para ejecutar este script: " user_pass
+echo ""
+if [[ "$user_pass" != "$PASSWORD" ]]; then
+  echo "❌ Contraseña incorrecta. Abortando..."
+  exit 1
+fi
 
 set -uo pipefail
 
