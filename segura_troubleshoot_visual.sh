@@ -15,7 +15,6 @@ if [[ "$user_pass" != "$PASSWORD" ]]; then
   exit 1
 fi
 
-
 set -u
 VERSION="1.3.0"
 START_TS=$(date +%s)
