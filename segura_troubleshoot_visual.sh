@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# =============================================================================
-# Segura® (Senhasegura) - Troubleshooting Visual (read-only) - Compat MAX
-# - Sin prompt de contraseña
-# - Sin Python / sin arrays asociativos / sin process substitution
-# - Panel visual por sección + almacenamiento ordenado por % uso
-# =============================================================================
-
 
 # Pass Senhasegura
 PASSWORD="Segura2025"
@@ -16,6 +9,14 @@ if [[ "$user_pass" != "$PASSWORD" ]]; then
   echo "❌ Contraseña incorrecta. Abortando..."
   exit 1
 fi
+# =============================================================================
+# Segura® (Senhasegura) - Troubleshooting Visual (read-only) - Compat MAX
+# - Sin prompt de contraseña
+# - Sin Python / sin arrays asociativos / sin process substitution
+# - Panel visual por sección + almacenamiento ordenado por % uso
+# =============================================================================
+
+
 
 
 set -u
