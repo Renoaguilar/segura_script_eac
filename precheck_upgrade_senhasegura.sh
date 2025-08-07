@@ -1,7 +1,19 @@
 #!/bin/bash
 # Validación previa a upgrade offline de Senhasegura
 
-#!/bin/bash
+#                 _
+#                | |
+#  ___  ___ _ __ | |__   __ _ ___  ___  __ _ _   _ _ __ __ _
+# / __|/ _ \ '_ \| '_ \ / _` / __|/ _ \/ _` | | | | '__/ _` |
+# \__ \  __/ | | | | | | (_| \__ \  __/ (_| | |_| | | | (_| |
+# |___/\___|_| |_|_| |_|\__,_|___/\___|\__, |\__,_|_|  \__,_|
+#                                       __/ |
+#                                      |___/
+
+# Script: segura_log_cleaner.sh
+# Autor:  Esteban Ac
+# Función: Precheck Upgrade
+
 # Pass Senhasegura
 PASSWORD="Segura2025"
 
