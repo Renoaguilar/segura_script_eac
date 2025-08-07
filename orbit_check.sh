@@ -1,7 +1,4 @@
 #!/bin/bash
-unset HISTFILE
-history -d $((HISTCMD-1)) 2>/dev/null
-history -w 2>/dev/null
 
 #                 _
 #                | |
