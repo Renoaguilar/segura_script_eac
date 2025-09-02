@@ -3,35 +3,16 @@ set -euo pipefail
 
 # ==========================
 # SENHASEGURA NETWORK CONNECTOR INSTALLER (CentOS Stream 10 / RHEL 10)
-# - Instala Docker CE si está disponible; si no, cae a Podman (podman-docker + podman-compose)
-# - Abre el puerto 51445 con firewalld (o iptables si no está firewalld)
-# - Genera docker-compose.yml y levanta el contenedor del agente
 # ==========================
 
-# --- Seguridad básica (opcional) ---
 PASSWORD="Segura2025"
-read -s -p " Ingresa la contraseña para ejecutar este script: " user_pass
-echo ""
-if [[ "$user_pass" != "$PASSWORD" ]]; then
-  echo "❌ Contraseña incorrecta. Abortando..."
-  exit 1
-fi
-
-# --- Constantes / Paths ---
-INSTALL_DIR="/opt/senhasegura/network-connector"
-COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
-AGENT_IMAGE="registry.senhasegura.io/network-connector/agent-v2:latest"
-LOGFILE="/var/tmp/install_nc_$(date +%Y%m%d_%H%M%S).log"
 
 OK="\033[1;32m[OK]\033[0m"
 WARN="\033[1;33m[WARN]\033[0m"
 FAIL="\033[1;31m[FAIL]\033[0m"
 INFO="\033[1;36m[INFO]\033[0m"
 
-print_status() {
-  local status="$1"; shift
-  echo -e " ➔ $status $*" | tee -a "$LOGFILE"
-}
+print_status() { local s="$1"; shift; echo -e " ➔ $s $*"; }
 
 require_root() {
   if [[ $EUID -ne 0 ]]; then
@@ -40,15 +21,20 @@ require_root() {
   fi
 }
 
-# --- Utilidades ---
-pkg_install() {
-  # dnf para CentOS/RHEL 10
-  dnf -y install "$@" 2>&1 | tee -a "$LOGFILE"
-}
+pkg_install() { dnf -y install "$@" ; }
+enable_start() { systemctl enable --now "$1" || true; }
 
-enable_start() {
-  systemctl enable --now "$1" 2>&1 | tee -a "$LOGFILE" || true
-}
+INSTALL_DIR="/opt/senhasegura/network-connector"
+COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
+AGENT_IMAGE="registry.senhasegura.io/network-connector/agent-v2:latest"
+
+# --- Seguridad básica (opcional) ---
+read -s -p " Ingresa la contraseña para ejecutar este script: " user_pass
+echo ""
+if [[ "$user_pass" != "$PASSWORD" ]]; then
+  echo "❌ Contraseña incorrecta. Abortando..."
+  exit 1
+fi
 
 # --- Inicio ---
 require_root
@@ -56,43 +42,35 @@ mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
 print_status "$INFO" "Actualizando metadatos de paquetes"
-dnf -y makecache 2>&1 | tee -a "$LOGFILE"
+dnf -y makecache
 
-# Herramientas base
 print_status "$INFO" "Instalando dependencias base"
-pkg_install curl tar jq iproute procps-ng \
-  || print_status "$WARN" "Algunas dependencias ya estaban instaladas"
+pkg_install curl tar jq iproute procps-ng || true
+command -v nc >/dev/null 2>&1 || pkg_install nmap-ncat
 
-# netcat en RHEL/CentOS es nmap-ncat
-if ! command -v nc >/dev/null 2>&1; then
-  pkg_install nmap-ncat || true
-fi
-
-# --- Abrir puerto 51445 (registry.senhasegura.io) ---
+# --- Abrir 51445/TCP local (salida a registry.senhasegura.io) ---
 print_status "$INFO" "Probando conectividad TCP 51445 hacia registry.senhasegura.io"
 if nc -zvw2 registry.senhasegura.io 51445 >/dev/null 2>&1; then
   print_status "$OK" "Puerto 51445 accesible"
 else
-  print_status "$WARN" "Puerto 51445 inaccesible, intentando abrir con firewalld"
+  print_status "$WARN" "51445 inaccesible, abriendo en firewalld"
   if command -v firewall-cmd >/dev/null 2>&1; then
     enable_start firewalld
-    firewall-cmd --permanent --add-port=51445/tcp 2>&1 | tee -a "$LOGFILE" || true
-    firewall-cmd --reload 2>&1 | tee -a "$LOGFILE" || true
+    firewall-cmd --permanent --add-port=51445/tcp || true
+    firewall-cmd --reload || true
   else
-    print_status "$WARN" "firewalld no está presente, usando iptables temporalmente"
-    iptables -C INPUT -p tcp --dport 51445 -j ACCEPT 2>/dev/null \
-      || iptables -I INPUT -p tcp --dport 51445 -j ACCEPT
-    # persistencia iptables no cubierta (recomendado instalar firewalld)
+    print_status "$WARN" "firewalld no presente; añadiendo iptables (no persistente)"
+    iptables -C INPUT -p tcp --dport 51445 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 51445 -j ACCEPT
   fi
   sleep 2
   if nc -zvw2 registry.senhasegura.io 51445 >/dev/null 2>&1; then
-    print_status "$OK" "Puerto 51445 ahora accesible"
+    print_status "$OK" "51445 ahora accesible"
   else
-    print_status "$FAIL" "No se pudo abrir el puerto 51445 (ver firewall/red). Continuando de todos modos..."
+    print_status "$FAIL" "Sigue inaccesible. Puede estar bloqueado en el perímetro; continuaremos."
   fi
 fi
 
-# --- Solicitar datos ---
+# --- Datos requeridos ---
 while true; do
   read -rp " FINGERPRINT: " FINGERPRINT
   if [[ "$FINGERPRINT" =~ ^[a-f0-9\-]{36}$ || "$FINGERPRINT" =~ ^[A-Za-z0-9+/=]{60,}$ ]]; then
@@ -112,10 +90,10 @@ while true; do
   if [[ "$PAM_ADDRESS" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(,([0-9]{1,3}\.){3}[0-9]{1,3})*$ ]]; then
     break
   else
-    echo -e "$FAIL Formato incorrecto. Solo IPs, sin puertos."
+    echo -e "$FAIL Solo IPs, sin puertos."
   fi
   if [[ "$PAM_ADDRESS" =~ ":" ]]; then
-    echo -e "$WARN No incluyas puertos en SENHASEGURA_ADDRESSES. Solo IPs."
+    echo -e "$WARN No incluyas puertos en SENHASEGURA_ADDRESSES."
   fi
 done
 
@@ -123,42 +101,109 @@ read -rp " ¿Es agente secundario? (true/false): " IS_SECONDARY
 IS_SECONDARY="${IS_SECONDARY,,}"
 [[ "$IS_SECONDARY" == "true" || "$IS_SECONDARY" == "false" ]] || IS_SECONDARY="false"
 
-# --- Docker/Podman instalación inteligente ---
-HAVE_DOCKER=0
-HAVE_DOCKER_COMPOSE=0
-
-print_status "$INFO" "Intentando instalar Docker CE (si está disponible para este release)"
-# Repo oficial Docker (puede no tener todavía el release de el10; probamos el de el9 como fallback)
+# --- Docker/Podman ---
+print_status "$INFO" "Intentando Docker CE (si hay paquetes para el release)"
 if [[ ! -f /etc/yum.repos.d/docker-ce.repo ]]; then
-  dnf -y install dnf-plugins-core 2>&1 | tee -a "$LOGFILE" || true
-  # Primero intentamos el repo el10; si falla, probamos el9.
+  dnf -y install dnf-plugins-core || true
   curl -fsSL https://download.docker.com/linux/centos/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo || true
 fi
 
-# Intento 1: paquetes docker-ce (si existen para el release)
+HAVE_COMPOSE="no"
+
 if dnf list --available docker-ce >/dev/null 2>&1; then
-  pkg_install docker-ce docker-ce-cli containerd.io docker-compose-plugin
-  HAVE_DOCKER=1
-  HAVE_DOCKER_COMPOSE=1
+  pkg_install docker-ce docker-ce-cli containerd.io docker-compose-plugin || true
   enable_start docker
+  if docker compose version >/dev/null 2>&1; then HAVE_COMPOSE="plugin"; fi
 else
-  print_status "$WARN" "Paquetes docker-ce no disponibles para este release. Probando con Moby/Podman…"
-  # Intento 2: Podman + compatibilidad
+  print_status "$WARN" "Sin docker-ce para este release. Usando Podman + compat."
   pkg_install podman podman-docker || true
-  # Composición: preferimos plugin de docker si existe; de lo contrario, podman-compose
-  if ! command -v docker >/dev/null 2>&1; then
-    # 'podman-docker' crea /usr/bin/docker compat
-    ln -sf /usr/bin/podman /usr/bin/docker
-  fi
-
-  # Podman socket (opcional, no requerido para 'docker' CLI)
+  command -v docker >/dev/null 2>&1 || ln -sf /usr/bin/podman /usr/bin/docker
   systemctl enable --now podman.socket 2>/dev/null || true
-
-  # docker compose (plugin) no existe con podman; usamos docker-compose v1 o podman-compose
-  if ! command -v docker-compose >/dev/null 2>&1 && ! docker compose version >/dev/null 2>&1; then
-    # preferimos podman-compose desde repos
+  if command -v docker-compose >/dev/null 2>&1; then
+    HAVE_COMPOSE="v1"
+  else
     if dnf list --available podman-compose >/dev/null 2>&1; then
-      pkg_install podman-compose
-      HAVE_DOCKER_COMPOSE=1
+      pkg_install podman-compose || true
+      HAVE_COMPOSE="podman-compose"
     else
-      # Último recurso: binario docker-compose v1 (funciona con podman-docker en muchos casos)
+      curl -fsSL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" \
+        -o /usr/local/bin/docker-compose
+      chmod +x /usr/local/bin/docker-compose
+      HAVE_COMPOSE="v1"
+    fi
+  fi
+fi
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo -e "$FAIL No hay CLI 'docker' disponible (ni podman-docker)."
+  exit 1
+fi
+
+if [[ "$HAVE_COMPOSE" == "no" ]]; then
+  if docker compose version >/dev/null 2>&1; then
+    HAVE_COMPOSE="plugin"
+  elif command -v docker-compose >/dev/null 2>&1; then
+    HAVE_COMPOSE="v1"
+  else
+    echo -e "$FAIL No se encontró docker compose."
+    exit 1
+  fi
+fi
+
+# --- Generar docker-compose.yml ---
+cat > "$COMPOSE_FILE" <<EOF
+version: "3.8"
+services:
+  agent:
+    image: ${AGENT_IMAGE}
+    container_name: network-connector-agent
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      - FINGERPRINT=${FINGERPRINT}
+      - SENHASEGURA_ADDRESSES=${PAM_ADDRESS}
+      - AGENT_PORT=${AGENT_PORT}
+      - IS_SECONDARY=${IS_SECONDARY}
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/log:/var/log
+EOF
+
+echo -e "$OK docker-compose.yml generado en $COMPOSE_FILE"
+echo "-----"
+cat "$COMPOSE_FILE"
+echo "-----"
+
+# --- Levantar ---
+case "$HAVE_COMPOSE" in
+  plugin)
+    docker compose -f "$COMPOSE_FILE" down --remove-orphans || true
+    docker compose -f "$COMPOSE_FILE" up -d
+    ;;
+  v1)
+    docker-compose -f "$COMPOSE_FILE" down --remove-orphans || true
+    docker-compose -f "$COMPOSE_FILE" up -d
+    ;;
+  podman-compose)
+    docker-compose -f "$COMPOSE_FILE" down --remove-orphans || true
+    docker-compose -f "$COMPOSE_FILE" up -d
+    ;;
+  *)
+    echo -e "$FAIL Estado compose desconocido: $HAVE_COMPOSE"
+    exit 1
+    ;;
+esac
+
+sleep 5
+if docker ps --format '{{.Names}}' | grep -q '^network-connector-agent$'; then
+  if docker logs network-connector-agent 2>&1 | grep -qi "Agent started"; then
+    echo -e "$OK Agente funcionando correctamente."
+  else
+    echo -e "$WARN Contenedor activo; revisa logs para confirmar inicialización."
+  fi
+else
+  echo -e "$FAIL El contenedor no está corriendo."
+  exit 1
+fi
+
+exit 0
