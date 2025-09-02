@@ -73,13 +73,11 @@ services:
     networks:
       - senhasegura-network-connector
     # publicar el puerto del agente para facilitar pruebas desde el host
-    ports:
-      - "${AGENT_PORT}:${AGENT_PORT}"
     environment:
-      SENHASEGURA_FINGERPRINT: "${SNC_FINGERPRINT}"
-      SENHASEGURA_AGENT_PORT: "${AGENT_PORT}"
-      SENHASEGURA_ADDRESSES: "${PAM_IPS}"
-      SENHASEGURA_AGENT_SECONDARY: "${IS_SECONDARY}"
+      SENHASEGURA_FINGERPRINT: ${SNC_FINGERPRINT}
+      SENHASEGURA_AGENT_PORT: ${AGENT_PORT}
+      SENHASEGURA_ADDRESSES: ${PAM_IPS}
+      SENHASEGURA_AGENT_SECONDARY: ${IS_SECONDARY}
 networks:
   senhasegura-network-connector:
     driver: bridge
