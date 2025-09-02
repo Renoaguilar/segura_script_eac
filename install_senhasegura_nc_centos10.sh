@@ -3,6 +3,8 @@ set -euo pipefail
 
 # ==========================
 # SENHASEGURA NETWORK CONNECTOR INSTALLER (CentOS Stream 10 / RHEL 10)
+# Genera docker-compose.yml conforme a documentación oficial (SENHASEGURA_*),
+# levanta el agente y ejecuta pruebas básicas al final.
 # ==========================
 
 PASSWORD="Segura2025"
@@ -12,198 +14,192 @@ WARN="\033[1;33m[WARN]\033[0m"
 FAIL="\033[1;31m[FAIL]\033[0m"
 INFO="\033[1;36m[INFO]\033[0m"
 
-print_status() { local s="$1"; shift; echo -e " ➔ $s $*"; }
-
-require_root() {
-  if [[ $EUID -ne 0 ]]; then
-    echo -e "$FAIL Debes ejecutar como root."
-    exit 1
-  fi
-}
-
-pkg_install() { dnf -y install "$@" ; }
-enable_start() { systemctl enable --now "$1" || true; }
+say(){ echo -e " ➔ $1 $2"; }
+need_root(){ [[ $EUID -eq 0 ]] || { say "$FAIL" "Ejecuta como root."; exit 1; }; }
+has(){ command -v "$1" >/dev/null 2>&1; }
+pkg(){ dnf -y install "$@" >/dev/null; }
+enable_now(){ systemctl enable --now "$1" >/dev/null 2>&1 || true; }
 
 INSTALL_DIR="/opt/senhasegura/network-connector"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
-AGENT_IMAGE="registry.senhasegura.io/network-connector/agent-v2:latest"
+SERVICE_NAME="senhasegura-network-connector-agent"
+IMAGE="registry.senhasegura.io/network-connector/agent-v2:latest"
 
-# --- Seguridad básica (opcional) ---
-read -s -p " Ingresa la contraseña para ejecutar este script: " user_pass
-echo ""
-if [[ "$user_pass" != "$PASSWORD" ]]; then
-  echo "❌ Contraseña incorrecta. Abortando..."
-  exit 1
-fi
+# --- Autenticación básica (opcional)
+read -s -p " Ingresa la contraseña para ejecutar este script: " _pw; echo
+[[ "$_pw" == "$PASSWORD" ]] || { echo "❌ Contraseña incorrecta"; exit 1; }
 
-# --- Inicio ---
-require_root
+need_root
 mkdir -p "$INSTALL_DIR"
 cd "$INSTALL_DIR"
 
-print_status "$INFO" "Actualizando metadatos de paquetes"
-dnf -y makecache
+say "$INFO" "Preparando utilidades"
+dnf -y makecache >/dev/null
+pkg curl tar jq iproute procps-ng >/dev/null || true
+has nc || pkg nmap-ncat >/dev/null || true
+has firewall-cmd || true
 
-print_status "$INFO" "Instalando dependencias base"
-pkg_install curl tar jq iproute procps-ng || true
-command -v nc >/dev/null 2>&1 || pkg_install nmap-ncat
-
-# --- Abrir 51445/TCP local (salida a registry.senhasegura.io) ---
-print_status "$INFO" "Probando conectividad TCP 51445 hacia registry.senhasegura.io"
-if nc -zvw2 registry.senhasegura.io 51445 >/dev/null 2>&1; then
-  print_status "$OK" "Puerto 51445 accesible"
-else
-  print_status "$WARN" "51445 inaccesible, abriendo en firewalld"
-  if command -v firewall-cmd >/dev/null 2>&1; then
-    enable_start firewalld
-    firewall-cmd --permanent --add-port=51445/tcp || true
-    firewall-cmd --reload || true
-  else
-    print_status "$WARN" "firewalld no presente; añadiendo iptables (no persistente)"
-    iptables -C INPUT -p tcp --dport 51445 -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 51445 -j ACCEPT
-  fi
-  sleep 2
-  if nc -zvw2 registry.senhasegura.io 51445 >/dev/null 2>&1; then
-    print_status "$OK" "51445 ahora accesible"
-  else
-    print_status "$FAIL" "Sigue inaccesible. Puede estar bloqueado en el perímetro; continuaremos."
-  fi
-fi
-
-# --- Datos requeridos ---
+# --- Datos requeridos (según docs)
 while true; do
-  read -rp " FINGERPRINT: " FINGERPRINT
-  if [[ "$FINGERPRINT" =~ ^[a-f0-9\-]{36}$ || "$FINGERPRINT" =~ ^[A-Za-z0-9+/=]{60,}$ ]]; then
-    break
-  else
-    echo -e "$FAIL Formato inválido (GUID o Base64 largo)."
-  fi
+  read -rp " FINGERPRINT (SENHASEGURA_FINGERPRINT): " SENHASEGURA_FINGERPRINT
+  [[ -n "$SENHASEGURA_FINGERPRINT" ]] && break || say "$WARN" "No puede quedar vacío."
 done
 
 while true; do
-  read -rp " PUERTO AGENTE (30000-30999): " AGENT_PORT
-  [[ "$AGENT_PORT" =~ ^30[0-9]{3}$ ]] && break || echo -e "$FAIL Puerto inválido."
+  read -rp " PUERTO del agente 30000-30999 (SENHASEGURA_AGENT_PORT): " SENHASEGURA_AGENT_PORT
+  [[ "$SENHASEGURA_AGENT_PORT" =~ ^30[0-9]{3}$ ]] && break || say "$WARN" "Puerto inválido."
 done
 
 while true; do
-  read -rp " IP(s) de PAM (coma separadas, sin puerto): " PAM_ADDRESS
-  if [[ "$PAM_ADDRESS" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(,([0-9]{1,3}\.){3}[0-9]{1,3})*$ ]]; then
-    break
-  else
-    echo -e "$FAIL Solo IPs, sin puertos."
-  fi
-  if [[ "$PAM_ADDRESS" =~ ":" ]]; then
-    echo -e "$WARN No incluyas puertos en SENHASEGURA_ADDRESSES."
-  fi
+  read -rp " IP(s) de la(s) instancia(s) Segura (SENHASEGURA_ADDRESSES, separadas por coma SIN espacios): " SENHASEGURA_ADDRESSES
+  [[ "$SENHASEGURA_ADDRESSES" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(,[0-9]{1,3}(\.[0-9]{1,3}){3})*$ ]] && break || say "$WARN" "Formato inválido."
 done
 
-read -rp " ¿Es agente secundario? (true/false): " IS_SECONDARY
-IS_SECONDARY="${IS_SECONDARY,,}"
-[[ "$IS_SECONDARY" == "true" || "$IS_SECONDARY" == "false" ]] || IS_SECONDARY="false"
+read -rp " ¿Es agente secundario? (true/false) [false]: " SENHASEGURA_AGENT_SECONDARY
+SENHASEGURA_AGENT_SECONDARY="${SENHASEGURA_AGENT_SECONDARY,,}"
+[[ "$SENHASEGURA_AGENT_SECONDARY" == "true" || "$SENHASEGURA_AGENT_SECONDARY" == "false" ]] || SENHASEGURA_AGENT_SECONDARY="false"
 
-# --- Docker/Podman ---
-print_status "$INFO" "Intentando Docker CE (si hay paquetes para el release)"
-if [[ ! -f /etc/yum.repos.d/docker-ce.repo ]]; then
-  dnf -y install dnf-plugins-core || true
+# --- Docker/Podman
+say "$INFO" "Instalando runtime (Docker/Podman)"
+if ! has docker; then
+  dnf -y install dnf-plugins-core >/dev/null || true
   curl -fsSL https://download.docker.com/linux/centos/docker-ce.repo -o /etc/yum.repos.d/docker-ce.repo || true
 fi
 
 HAVE_COMPOSE="no"
-
 if dnf list --available docker-ce >/dev/null 2>&1; then
-  pkg_install docker-ce docker-ce-cli containerd.io docker-compose-plugin || true
-  enable_start docker
-  if docker compose version >/dev/null 2>&1; then HAVE_COMPOSE="plugin"; fi
+  pkg docker-ce docker-ce-cli containerd.io docker-compose-plugin || true
+  enable_now docker
+  has docker && docker compose version >/dev/null 2>&1 && HAVE_COMPOSE="plugin"
 else
-  print_status "$WARN" "Sin docker-ce para este release. Usando Podman + compat."
-  pkg_install podman podman-docker || true
-  command -v docker >/dev/null 2>&1 || ln -sf /usr/bin/podman /usr/bin/docker
-  systemctl enable --now podman.socket 2>/dev/null || true
-  if command -v docker-compose >/dev/null 2>&1; then
+  # Fallback a Podman con compatibilidad
+  pkg podman podman-docker || true
+  [[ -x /usr/bin/docker ]] || ln -sf /usr/bin/podman /usr/bin/docker
+  systemctl enable --now podman.socket >/dev/null 2>&1 || true
+  if dnf list --available podman-compose >/dev/null 2>&1; then
+    pkg podman-compose || true
     HAVE_COMPOSE="v1"
   else
-    if dnf list --available podman-compose >/dev/null 2>&1; then
-      pkg_install podman-compose || true
-      HAVE_COMPOSE="podman-compose"
-    else
-      curl -fsSL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" \
-        -o /usr/local/bin/docker-compose
-      chmod +x /usr/local/bin/docker-compose
-      HAVE_COMPOSE="v1"
-    fi
+    # docker-compose v1 standalone (funciona con podman-docker)
+    curl -fsSL "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+    HAVE_COMPOSE="v1"
   fi
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
-  echo -e "$FAIL No hay CLI 'docker' disponible (ni podman-docker)."
-  exit 1
-fi
-
+# Detección final de compose
 if [[ "$HAVE_COMPOSE" == "no" ]]; then
-  if docker compose version >/dev/null 2>&1; then
-    HAVE_COMPOSE="plugin"
-  elif command -v docker-compose >/dev/null 2>&1; then
-    HAVE_COMPOSE="v1"
+  if docker compose version >/dev/null 2>&1; then HAVE_COMPOSE="plugin"
+  elif command -v docker-compose >/dev/null 2>&1; then HAVE_COMPOSE="v1"
   else
-    echo -e "$FAIL No se encontró docker compose."
-    exit 1
+    say "$FAIL" "No hay docker compose disponible."; exit 1
   fi
 fi
 
-# --- Generar docker-compose.yml ---
+# --- Firewall local: mostramos (no tocamos aún)
+if command -v firewall-cmd >/dev/null 2>&1; then
+  say "$INFO" "firewalld detectado. Recuerda permitir: 51445/tcp (egreso registry) y ${SENHASEGURA_AGENT_PORT}/tcp."
+fi
+
+# --- Generar docker-compose.yml conforme DOCS
+#   Nota: DOCS muestran servicio, imagen, restart, networks y environment con claves SENHASEGURA_*.
+#   Agregamos 'ports' para exponer el puerto del agente en el host (sin romper el formato de DOCS).
 cat > "$COMPOSE_FILE" <<EOF
 version: "3.8"
 services:
-  agent:
-    image: ${AGENT_IMAGE}
-    container_name: network-connector-agent
-    network_mode: host
+  ${SERVICE_NAME}:
+    image: "${IMAGE}"
     restart: unless-stopped
+    networks:
+      - senhasegura-network-connector
+    ports:
+      - "${SENHASEGURA_AGENT_PORT}:${SENHASEGURA_AGENT_PORT}"
     environment:
-      - FINGERPRINT=${FINGERPRINT}
-      - SENHASEGURA_ADDRESSES=${PAM_ADDRESS}
-      - AGENT_PORT=${AGENT_PORT}
-      - IS_SECONDARY=${IS_SECONDARY}
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - /var/log:/var/log
+      SENHASEGURA_FINGERPRINT: "${SENHASEGURA_FINGERPRINT}"
+      SENHASEGURA_AGENT_PORT: "${SENHASEGURA_AGENT_PORT}"
+      SENHASEGURA_ADDRESSES: "${SENHASEGURA_ADDRESSES}"
+      SENHASEGURA_AGENT_SECONDARY: "${SENHASEGURA_AGENT_SECONDARY}"
+networks:
+  senhasegura-network-connector:
+    driver: bridge
 EOF
 
-echo -e "$OK docker-compose.yml generado en $COMPOSE_FILE"
-echo "-----"
-cat "$COMPOSE_FILE"
-echo "-----"
+say "$OK" "docker-compose.yml generado en $COMPOSE_FILE"
+echo "-----"; cat "$COMPOSE_FILE"; echo "-----"
 
-# --- Levantar ---
-case "$HAVE_COMPOSE" in
-  plugin)
-    docker compose -f "$COMPOSE_FILE" down --remove-orphans || true
-    docker compose -f "$COMPOSE_FILE" up -d
-    ;;
-  v1)
-    docker-compose -f "$COMPOSE_FILE" down --remove-orphans || true
-    docker-compose -f "$COMPOSE_FILE" up -d
-    ;;
-  podman-compose)
-    docker-compose -f "$COMPOSE_FILE" down --remove-orphans || true
-    docker-compose -f "$COMPOSE_FILE" up -d
-    ;;
-  *)
-    echo -e "$FAIL Estado compose desconocido: $HAVE_COMPOSE"
-    exit 1
-    ;;
-esac
-
-sleep 5
-if docker ps --format '{{.Names}}' | grep -q '^network-connector-agent$'; then
-  if docker logs network-connector-agent 2>&1 | grep -qi "Agent started"; then
-    echo -e "$OK Agente funcionando correctamente."
-  else
-    echo -e "$WARN Contenedor activo; revisa logs para confirmar inicialización."
-  fi
+# --- Levantar
+say "$INFO" "Levantando el agente…"
+if [[ "$HAVE_COMPOSE" == "plugin" ]]; then
+  docker compose -f "$COMPOSE_FILE" down --remove-orphans >/dev/null 2>&1 || true
+  docker compose -f "$COMPOSE_FILE" up -d
 else
-  echo -e "$FAIL El contenedor no está corriendo."
-  exit 1
+  docker-compose -f "$COMPOSE_FILE" down --remove-orphans >/dev/null 2>&1 || true
+  docker-compose -f "$COMPOSE_FILE" up -d
 fi
 
-exit 0
+# --- Espera breve y tests
+sleep 5
+
+STATUS_FAIL=0
+NAME="$SERVICE_NAME"
+
+# 1) Contenedor corriendo
+STATE="$(docker inspect --format '{{.State.Status}}' "$NAME" 2>/dev/null || echo "unknown")"
+if [[ "$STATE" == "running" ]]; then
+  say "$OK" "Contenedor '$NAME' en ejecución."
+else
+  say "$FAIL" "Contenedor '$NAME' no está corriendo (estado: $STATE)."
+  STATUS_FAIL=1
+fi
+
+# 2) Variables dentro del contenedor
+ENV_OUT="$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$NAME" 2>/dev/null || true)"
+for v in SENHASEGURA_FINGERPRINT SENHASEGURA_AGENT_PORT SENHASEGURA_ADDRESSES SENHASEGURA_AGENT_SECONDARY; do
+  if grep -q "^${v}=" <<<"$ENV_OUT"; then
+    say "$OK" "ENV ${v} presente."
+  else
+    say "$FAIL" "ENV ${v} ausente."
+    STATUS_FAIL=1
+  fi
+done
+
+# 3) Puerto escuchando en host (por mapeo ports:)
+if ss -ltn "( sport = :$SENHASEGURA_AGENT_PORT )" | awk 'NR>1{print}' | grep -q .; then
+  say "$OK" "Puerto ${SENHASEGURA_AGENT_PORT}/tcp en escucha en el host."
+else
+  say "$FAIL" "Puerto ${SENHASEGURA_AGENT_PORT}/tcp NO aparece en escucha en el host."
+  STATUS_FAIL=1
+fi
+
+# 4) Egreso a registry 51445 (no bloqueante)
+if nc -zvw2 registry.senhasegura.io 51445 >/dev/null 2>&1; then
+  say "$OK" "Salida a registry.senhasegura.io:51445 OK."
+else
+  say "$WARN" "Sin salida a registry.senhasegura.io:51445 (posible firewall perimetral)."
+fi
+
+# 5) Firewalld: solo informar (no cambia reglas)
+if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+  PORTS="$(firewall-cmd --list-ports 2>/dev/null || true)"
+  if grep -qw "51445/tcp" <<<"$PORTS"; then
+    say "$OK" "51445/tcp permitido en firewalld."
+  else
+    say "$WARN" "51445/tcp NO aparece permitido en firewalld."
+  fi
+  if grep -qw "${SENHASEGURA_AGENT_PORT}/tcp" <<<"$PORTS"; then
+    say "$OK" "${SENHASEGURA_AGENT_PORT}/tcp permitido en firewalld."
+  else
+    say "$WARN" "${SENHASEGURA_AGENT_PORT}/tcp NO aparece permitido en firewalld."
+  fi
+fi
+
+# 6) Mensaje final + hint de logs
+echo
+if [[ "$STATUS_FAIL" -eq 0 ]]; then
+  say "$OK" "Instalación y pruebas básicas completadas."
+else
+  say "$WARN" "Instalado con observaciones. Revisa logs:"
+fi
+echo "    docker logs -f ${NAME} | sed -n '1,120p'"
+
+exit "$STATUS_FAIL"
